@@ -1,0 +1,11 @@
+# Installare PyTorch con CUDA a parte (vedi README/setup):
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+torch
+torchvision
+
+# Computer vision classica
+opencv-python
+numpy
+
+# YOLO (detection palle) - transfer learning da YOLOv8
+ultralytics

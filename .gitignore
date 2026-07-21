@@ -1,3 +1,13 @@
 __pycache__/
 .vscode/
 .ipynb_checkpoints/
+
+# Ambiente
+.venv/
+
+# Dataset e video (pesanti, non vanno nel repo)
+datasets/
+
+# Pesi e output dei training YOLO
+*.pt
+runs/
