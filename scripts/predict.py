@@ -47,10 +47,13 @@ def nearest_wall(P, d, R):
     return min(ts) if ts else (None, None)
 
 
-def first_ball_hit(P, d, R, balls, t_max):
-    """Prima palla colpita lungo P+t d entro t_max. Contatto a distanza 2R tra centri."""
+def first_ball_hit(P, d, R, balls, skip, t_max):
+    """Prima palla (indice non in skip) colpita lungo P+t d entro t_max.
+    Contatto quando i centri distano 2R."""
     best_t, best_i = None, None
     for i, C in enumerate(balls):
+        if i in skip:
+            continue
         f = P - C
         b = float(f @ d)
         c = float(f @ f) - (2 * R) ** 2
@@ -63,41 +66,54 @@ def first_ball_hit(P, d, R, balls, t_max):
     return best_t, best_i
 
 
-def simulate_cue(P, d, R, balls, capture):
-    """Traiettoria battente fino alla prima palla / buca. Ritorna (path, event)."""
+def propagate(P, d, R, balls, skip, capture, max_bounces=0):
+    """Un ANELLO della catena: la palla avanza fino al primo evento.
+    max_bounces=0 -> si ferma alla prima sponda (retta pulita).
+    max_bounces>0 -> rimbalza sulle sponde (banchi) fino a incontrare palla/buca.
+    Ritorna (path, evento): ('ball', j, contact, struck_dir) | ('pocket',) | ('none',)."""
     pockets = [np.array(q, np.float64) for q in POCKETS_TOP]
     P = P.astype(np.float64); d = d / (np.linalg.norm(d) + 1e-9)
     path = [P.copy()]
-    for _ in range(MAX_BOUNCES):
+    for _ in range(max_bounces + 1):
         t_wall, ax = nearest_wall(P, d, R)
         if t_wall is None:
             break
-        t_ball, i = first_ball_hit(P, d, R, balls, t_wall)
+        t_ball, j = first_ball_hit(P, d, R, balls, skip, t_wall)
         if t_ball is not None:                        # colpisce una palla
             contact = P + d * t_ball
             path.append(contact)
-            struck_dir = balls[i] - contact
-            return path, ("ball", i, contact, struck_dir / (np.linalg.norm(struck_dir) + 1e-9))
-        hit = P + d * t_wall
+            sdir = balls[j] - contact
+            return path, ("ball", j, contact, sdir / (np.linalg.norm(sdir) + 1e-9))
+        hit = P + d * t_wall                           # arriva alla sponda
         path.append(hit)
         if min(np.linalg.norm(hit - q) for q in pockets) <= capture:
-            return path, ("pocket_cue",)             # battente in buca (fallo)
+            return path, ("pocket",)
         d = np.array([-d[0], d[1]]) if ax == "x" else np.array([d[0], -d[1]])
         P = hit
     return path, ("none",)
 
 
-def simulate_ball(P, d, R, capture):
-    """PRIMA RETTA della palla colpita: dal suo centro fino alla prima sponda.
-    IN se quel punto e' su una buca (tiro diretto), altrimenti OUT. (path, potted)."""
-    pockets = [np.array(q, np.float64) for q in POCKETS_TOP]
-    P = P.astype(np.float64); d = d / (np.linalg.norm(d) + 1e-9)
-    t_wall, _ = nearest_wall(P, d, R)
-    if t_wall is None:
-        return [P], False
-    hit = P + d * t_wall
-    potted = min(np.linalg.norm(hit - q) for q in pockets) <= capture
-    return [P, hit], potted
+def simulate_chain(P0, d0, R, balls, capture, max_depth=3, max_bounces=0):
+    """Catena: battente -> palla A -> (A colpisce B -> B ...) fino a max_depth.
+    Ritorna (segmenti, potted_idx) dove segmenti = lista di (path, ball_idx|None)
+    e potted_idx = indice palla imbucata (None = nessuna, -1 = battente/scratch)."""
+    segments = []
+    skip = set()
+    P, d, cur = P0, d0, None          # cur=None -> battente
+    potted_idx = None
+    for _ in range(max_depth + 1):
+        seg, ev = propagate(P, d, R, balls, skip, capture, max_bounces)
+        segments.append((seg, cur))
+        if ev[0] == "pocket":
+            potted_idx = cur if cur is not None else -1
+            break
+        if ev[0] == "ball":
+            j = ev[1]
+            skip.add(j)
+            P, d, cur = balls[j], ev[3], j
+            continue
+        break                          # 'none' -> la palla si ferma, catena finita
+    return segments, potted_idx
 
 
 def draw_path(ov, path_top, Hinv, color, thick=3):
@@ -109,6 +125,7 @@ def draw_path(ov, path_top, Hinv, color, thick=3):
 def main():
     video = sys.argv[1] if len(sys.argv) > 1 else "datasets/videos/video3.mp4"
     frame_idx = int(sys.argv[2]) if len(sys.argv) > 2 else 0
+    max_bounces = int(sys.argv[3]) if len(sys.argv) > 3 else 0   # >0 = permetti banchi (prova)
     cap = cv2.VideoCapture(video)
     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
     ok, frame = cap.read()
@@ -143,7 +160,8 @@ def main():
     R_top = float(np.linalg.norm(to_top(cue_img + np.array([R_img, 0], np.float32)) - P0))
     capture = 2.2 * R_top
 
-    cue_path, event = simulate_cue(P0, d0, R_top, obj_top, capture)
+    segments, potted_idx = simulate_chain(P0, d0, R_top, obj_top, capture,
+                                          max_depth=3, max_bounces=max_bounces)
 
     ov = frame.copy()
     for q in POCKETS_TOP:
@@ -155,26 +173,27 @@ def main():
         col = (255, 255, 255) if b["label"] == "0" else (0, 255, 255)
         draw_ball_label(ov, b["center"], b["label"], col)
 
-    draw_path(ov, cue_path, Hinv, (0, 0, 255), 3)                 # battente = rosso
+    # disegno la catena: battente=rosso, poi ogni anello un colore diverso
+    palette = [(0, 200, 0), (255, 200, 0), (255, 0, 200), (0, 200, 255)]
+    chain = []
+    for k, (seg, cur) in enumerate(segments):
+        color = (0, 0, 255) if cur is None else palette[(k - 1) % len(palette)]
+        draw_path(ov, seg, Hinv, color, 3)
+        if cur is not None:
+            chain.append(obj[cur]["label"])
     cv2.circle(ov, tuple(cue_img.astype(int)), int(R_img), (255, 255, 255), 2)
+    print(f"Catena: battente -> " + " -> ".join(chain) if chain else "Nessuna palla colpita")
 
-    result, potted_label = "OUT", None
-    if event[0] == "ball":
-        i, contact, sdir = event[1], event[2], event[3]
-        struck_path, potted = simulate_ball(obj_top[i], sdir, R_top, capture)
-        draw_path(ov, struck_path, Hinv, (0, 200, 0), 3)         # palla colpita = verde
-        cv2.circle(ov, tuple(obj[i]["center"].astype(int)), int(R_img) + 4, (0, 200, 0), 3)
-        if potted:
-            result, potted_label = "IN", obj[i]["label"]
-        print(f"Prima palla colpita: {obj[i]['label']}  ->  "
-              f"{'IMBUCATA' if potted else 'NON imbucata'}")
-    elif event[0] == "pocket_cue":
-        result = "SCRATCH"
-        print("La battente finisce in buca (fallo)")
+    if potted_idx is None:
+        result, txt = "OUT", "OUT"
+    elif potted_idx == -1:
+        result, txt = "SCRATCH", "SCRATCH (battente in buca)"
     else:
-        print("Nessuna palla colpita")
-
-    txt = result if potted_label is None else f"{result}: palla {potted_label}"
+        result = "IN"
+        lbl = obj[potted_idx]["label"]
+        txt = f"IN: palla {lbl}"
+        cv2.circle(ov, tuple(obj[potted_idx]["center"].astype(int)), int(R_img) + 4, (0, 200, 0), 3)
+        print(f"Imbucata: palla {lbl}")
     cv2.putText(ov, txt, (40, 80), cv2.FONT_HERSHEY_SIMPLEX, 2.0,
                 (0, 255, 0) if result == "IN" else (0, 0, 255), 5)
     name = os.path.splitext(os.path.basename(video))[0].replace(" ", "_")
