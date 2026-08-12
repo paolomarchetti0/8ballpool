@@ -37,8 +37,13 @@ def read_frame(video, idx):
     return frame
 
 
-def cloth_mask(frame_bgr):
-    """Maschera del panno: soglia HSV attorno al colore prevalente al centro."""
+def cloth_mask(frame_bgr, bridge=True):
+    """Maschera del panno: soglia HSV attorno al colore prevalente al centro.
+    bridge=True: chiusura morfologica (tappa palle/buche) -> maschera piena, comoda
+      per buche e ROI, ma UNISCE il campo al cappello della sponda (stesso ciano).
+    bridge=False: NIENTE chiusura -> la LINEA SCURA del naso (ombra tra campo e
+      sponda rialzata) resta e SEPARA il campo dal cappello sponda. Serve per
+      trovare i veri angoli/naso delle sponde (vedi cushion_corners)."""
     hsv = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
     h, w = hsv.shape[:2]
 
@@ -54,11 +59,14 @@ def cloth_mask(frame_bgr):
     upper = np.clip(med + tol, [0, 30, 30], [179, 255, 255]).astype(np.uint8)
     mask = cv2.inRange(hsv, lower, upper)
 
-    # Morfologia: chiudo i buchi (palle, buche, stecca) e pulisco il rumore.
-    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25))
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)
+    if bridge:
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE,
+                                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (25, 25)))
+        ok = 9
+    else:
+        ok = 3          # open piccolo: NON ricuce l'ombra del naso (~15px)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN,
-                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)))
+                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ok, ok)))
     return mask, med
 
 
@@ -80,6 +88,45 @@ def order_corners(pts):
         pts[np.argmax(s)],   # basso-dx (x+y massimo)
         pts[np.argmax(d)],   # basso-sx (x-y minimo -> y-x massimo)
     ], dtype=np.float32)
+
+
+def _longest_run(line):
+    """Estremi (start, end) della sequenza continua di pixel accesi piu' LUNGA."""
+    idx = np.where(line > 0)[0]
+    if len(idx) == 0:
+        return None
+    runs = np.split(idx, np.where(np.diff(idx) > 1)[0] + 1)
+    best = max(runs, key=len)
+    return int(best[0]), int(best[-1])
+
+
+def cushion_corners(mask):
+    """4 angoli sul NASO DELLE SPONDE. Vuole la maschera NON-bridged
+    (cloth_mask(..., bridge=False)): la LINEA SCURA del naso (ombra) spezza il
+    ciano tra il CAMPO e il CAPPELLO della sponda rialzato. Per ogni riga/colonna
+    prendo la sequenza continua di ciano piu' LUNGA = il campo (il cappello e' una
+    sequenza piu' corta, separata dall'ombra). Il naso = posizione del bordo del
+    campo che ricorre di piu' (moda; le buche sono minoranza)."""
+    H, W = mask.shape
+
+    def mode(vals):
+        vals = (np.round(np.array(vals) / 3) * 3).astype(int)   # arrotondo a 3px
+        u, c = np.unique(vals, return_counts=True)
+        return int(u[np.argmax(c)])
+
+    lefts, rights, tops, bots = [], [], [], []
+    for y in range(0, H, 2):
+        r = _longest_run(mask[y])
+        if r and (r[1] - r[0]) > W * 0.3:      # solo righe che attraversano il campo
+            lefts.append(r[0]); rights.append(r[1])
+    for x in range(0, W, 2):
+        r = _longest_run(mask[:, x])
+        if r and (r[1] - r[0]) > H * 0.3:
+            tops.append(r[0]); bots.append(r[1])
+
+    top, bot = mode(tops), mode(bots)
+    left, right = mode(lefts), mode(rights)
+    return np.array([[left, top], [right, top], [right, bot], [left, bot]], np.float32)
 
 
 def main():

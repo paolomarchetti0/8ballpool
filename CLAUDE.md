@@ -58,7 +58,11 @@ parte lungo la **congiungente dei centri** (contatto a 2R). **Catena a profondit
 limitata** (`max_depth=3`): battente → prima palla → palla successiva… Esito
 `IN: palla X` / `OUT` / `SCRATCH`. **Banchi opzionali** (3° argomento `max_bounces`,
 default 0 = retta pulita). Numero disegnato su ogni palla.
-Assunzione onesta: geometria = *dove*, non *quanto* (niente energia).
+Doppio output: overlay sull'**immagine** (`predict_<video>_f<frame>.png`) **e mappa
+2D** schematica dall'alto (`map_<video>_f<frame>.png`, colori standard, righe con
+anello bianco). Rifiniture: `R`/`CAPTURE` dalla **mediana** del raggio di tutte le
+palle; **deviazione battente** dopo l'urto (tangente, regola 90°, linea grigia) +
+rilevamento **scratch**. Assunzione onesta: geometria = *dove*, non *quanto* (niente energia).
 
 ### Dataset / training
 Due dataset (V2 grigio-obliquo, V3 blu-dall'alto), 16 classi, `names` string-sort
@@ -78,13 +82,30 @@ python scripts/build_merged.py && python scripts/train.py full   # dataset + tra
 Usare **frame fermi** (motion≈0) per la detection; per la stecca un frame con la
 **stecca in mira**. Output in `output/predict_<video>_f<frame>.png`.
 
+### Validazione (`validate.py`) — Estensione C
+Confronta predizione vs realtà nei frame successivi: predico sul frame del tiro,
+poi su un frame DOPO (a palle ferme) le palle SPARITE dal gioco aperto = imbucate.
+`run_prediction(frame, model)` è la funzione riusabile estratta da `predict.py`.
+Onesto: se il conteggio palle *aumenta* è rumore → inconcludente. Esiti: video2
+IN palla 4 ✅ confermato; video4 era un **banco** che imbuca la 7 (default lo manca,
+la modalità banchi lo prende); video3 inconcludente per rumore.
+
+### Omografia obliqua (`detect_oblique.py`) — Estensione B
+Demo su V2 obliquo: 4 angoli **a mano** (auto-detection non regge sul grigio) →
+omografia → raddrizzo; validazione per auto-consistenza (palle → circolari).
+Su immagine PULITA (`out-1-101`, tavolo intero) con angoli marcati bene (griglia;
+la buca MURREY è la centrale non un angolo) e aspetto tarato (~2.7:1): **funziona**,
+palle circolari (aspetto ~1.04). Residuo onesto: CV diametri ~29% = **distorsione
+lente** (grandangolo, servirebbe calibrazione camera); 2.7:1 vs 2:1 = angoli non
+perfetti al pixel. Niente GT accoppiata → errore per auto-consistenza.
+
 ## Stato
 Nucleo completo end-to-end (tavolo ✅, omografia ✅, buche ✅, palle ✅, stecca ✅,
-predizione ✅) + Estensione A (catena di collisioni, banchi opzionali). Gira su
-materiale reale (video2/3/4).
+predizione ✅) + Estensione A (catena, banchi opzionali) + Estensione B (omografia
+obliqua, con limiti) + Estensione C (validazione). Gira su materiale reale (video2/3/4).
 
-## Prossimi possibili passi
-- Validare gli esiti IN/OUT sui **frame successivi** (Estensione C).
-- Legare `CAPTURE`/`R` al **raggio palla vero** (casi borderline).
-- Deviazione della battente dopo l'urto (tangente / regola 90°).
-- Omografia obliqua validata (Estensione B).
+## Prossimi possibili passi (opzionali)
+- **Calibrazione camera** per migliorare l'Estensione B (rimuovere la distorsione
+  della lente prima del raddrizzamento) — serve una scacchiera di calibrazione.
+- Detection automatica del tavolo su panno **grigio/obliquo** (V2), oggi manuale.
+- Validazione C più robusta all'identità rumorosa (es. matching per posizione).

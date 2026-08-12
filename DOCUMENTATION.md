@@ -168,13 +168,47 @@ Tutto in **vista dall'alto rettificata** (omografia dai 4 angoli), poi riproiett
 - `simulate_chain`: **catena a profondità limitata** (`max_depth=3`): battente → prima
   palla → ghost-ball (la colpita parte lungo la **congiungente dei centri**) →
   eventuale palla successiva → … Imbucata quando un anello finisce su una **buca**.
+- **Rifiniture**: `R_top` (e `CAPTURE=2.2·R`) dalla **mediana del raggio di tutte le
+  palle** (più robusto del solo box battente); **deviazione della battente** dopo il
+  primo urto lungo la **tangente** (regola dei 90°, linea grigia) con rilevamento
+  dello **scratch** (battente in buca → esito `+ SCRATCH`).
 - `main`: rileva tavolo+buche+battente+stecca, simula, disegna la catena (battente
   rossa, anelli successivi con colori diversi), **numero su ogni palla**, e l'esito
-  **`IN: palla X` / `OUT` / `SCRATCH`**. Output: `output/predict_<video>_f<frame>.png`.
+  **`IN: palla X` / `OUT` / `SCRATCH`**.
+- `draw_2d_map`: **mappa 2D schematica** (vista dall'alto rettificata) con tavolo,
+  buche, palle numerate coi **colori standard** (righe 9-15 con anello bianco) e la
+  catena. Doppio output: `output/predict_<video>_f<frame>.png` (immagine) +
+  `output/map_<video>_f<frame>.png` (mappa 2D).
 
 ### `run_core.py`
 Driver che su un frame mostra **tavolo + buche + palle (identità YOLO native + vincoli)**
 in un unico overlay, senza la predizione. Utile per verificare la detection.
+
+### `validate.py` — VALIDAZIONE esito (Estensione C)
+Confronta la predizione col risultato reale nei frame successivi (usati **solo**
+per validare): predice sul frame del tiro, poi su un frame **dopo** (a palle ferme,
+auto-scelto come ultimo frame fermo) rileva le palle rimaste in **gioco aperto**
+(lontane dalle buche); le palle **sparite** = imbucate davvero. Verdetto COERENTE/
+NON coerente. Onesto sui limiti: se il conteggio *aumenta* è rumore di identità →
+validazione inconcludente. `run_prediction(frame, model)` è la funzione riusabile
+estratta da `predict.py`.
+Risultati: video2 (IN palla 4) confermato; video4 (banco che imbuca la 7) preso
+dalla modalità banchi; video3 inconcludente per rumore.
+
+### `detect_oblique.py` — OMOGRAFIA OBLIQUA (Estensione B)
+Demo su immagine obliqua reale (dataset V2, panno grigio): 4 angoli del tavolo
+**marcati a mano** (l'auto-detection non regge sul grigio + clutter) → omografia
+verso un rettangolo 2:1 → raddrizzamento. **Validazione per auto-consistenza**:
+dopo un buon raddrizzamento le palle dovrebbero diventare circolari e uniformi.
+**Esito**: su un'immagine **pulita** (tavolo intero, angoli visibili, `out-1-101`) con
+angoli marcati bene (griglia di coordinate; attenzione: la buca `MURREY` è la
+**centrale**, non un angolo) e aspetto tarato (~2.7:1) il raddrizzamento **funziona**:
+palle **circolari** (aspetto_medio ~1.04) e vista dall'alto coerente. Residui onesti:
+CV dei diametri ~29% (le palle variano di dimensione secondo la posizione →
+**distorsione lente** grandangolare, non correggibile con omografia planare);
+aspetto 2.7:1 invece del 2:1 teorico (angoli a mano non perfetti al pixel). Per un
+raddrizzamento metrico esatto servirebbe la **calibrazione camera**. Niente ground
+truth accoppiata → errore misurato per auto-consistenza (circolarità/uniformità palle).
 
 ### QA / utility
 - `qa_datasets.py`: conteggi, bilanciamento classi, duplicati (pHash) e leakage.
@@ -227,6 +261,14 @@ Esempi di esito (catena):
   geometria basta la posizione (sono ostacoli anonimi).
 - **Rimbalzo non perfetto**: `R` e la linea di sponda sono stimati → errore di pochi
   pixel, non cambia l'esito qualitativo.
+- **Naso sponda vs cappello sponda**: il cappello della sponda ha lo stesso ciano del
+  campo, quindi `minAreaRect` sborda di pochi px oltre il naso e nella **mappa 2D** una
+  palla a ridosso della sponda appare leggermente staccata. Provato a correggere
+  (inset fisso, stima del naso dall'ombra): **scartato** perché, data la sensibilità
+  del predittore, anche un inset del 2% sposta le buche quel tanto che basta a
+  **ribaltare esiti validati** (video3 OUT → IN falso). Conclusione onesta: mappa
+  precisa e predizioni corrette sono **accoppiate**; si tiene `minAreaRect` (esiti
+  corretti) e si accetta la piccola imprecisione visiva della mappa.
 - **Catena semplificata**: profondità limitata, banchi opzionali, niente deviazione
   della battente dopo l'urto, niente collisioni tra due palle entrambe in moto.
 
